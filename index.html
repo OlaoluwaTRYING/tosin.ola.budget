@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Budgeter — Simple Budgeting App</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    :root{--bg:#0f1724;--card:#0b1220;--muted:#9aa4b2;--accent:#60a5fa;--accent-2:#34d399;--danger:#fb7185}
+    *{box-sizing:border-box}
+    body{font-family:Inter,Segoe UI,system-ui,Roboto,Helvetica,Arial,sans-serif;margin:0;background:linear-gradient(180deg,#071025 0%,#0b1320 100%);color:#e6eef6}
+    .wrap{max-width:1100px;margin:28px auto;padding:20px}
+    header{display:flex;align-items:center;gap:16px;margin-bottom:18px}
+    header h1{margin:0;font-size:20px}
+    .grid{display:grid;grid-template-columns:1fr 380px;gap:18px}
+    .card{background:linear-gradient(180deg,rgba(255,255,255,0.02),transparent);padding:16px;border-radius:12px;box-shadow:0 6px 20px rgba(2,6,23,0.6)}
+    .card h2{margin:0 0 12px 0;font-size:16px}
+    form .row{display:flex;gap:8px;margin-bottom:8px}
+    input,select,button{font:inherit;padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.06);background:transparent;color:inherit}
+    input[type=date]{padding:6px}
+    .transactions{max-height:320px;overflow:auto;margin-top:8px}
+    .tx{display:flex;justify-content:space-between;align-items:center;padding:8px;border-radius:8px;margin-bottom:6px;background:rgba(255,255,255,0.01)}
+    .tx .meta{display:flex;gap:10px;align-items:center}
+    .positive{color:var(--accent-2)}
+    .negative{color:var(--danger)}
+    .summary{display:flex;gap:12px;align-items:center;margin-top:14px}
+    .summary .box{padding:10px;border-radius:10px;background:rgba(255,255,255,0.02);min-width:120px}
+    .edited-note{color:#9aa4b2;font-size:11px;margin-left:6px;cursor:help}
+    .charts{display:flex;gap:12px;flex-wrap:wrap;margin-top:18px}
+    .charts canvas{background:rgba(255,255,255,0.02);border-radius:12px;flex:1 1 200px;max-height:250px;padding:10px}
+    .export-buttons{display:flex;gap:8px;margin-top:12px}
+    footer{margin-top:16px;text-align:center;color:var(--muted);font-size:13px}
+    @media (max-width:900px){.grid{grid-template-columns:1fr} .card{padding:12px}}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>Budgeter — minor budgeting web app (local)</h1>
+      <div style="margin-left:auto;color:var(--muted);font-size:13px">Data saved in your browser</div>
+    </header>
+
+    <div class="grid">
+      <div>
+        <div class="card">
+          <h2>Add or Edit Transaction</h2>
+          <form id="txForm">
+            <input type="hidden" id="editId" />
+            <div class="row">
+              <input id="txDesc" placeholder="Description" required />
+              <input id="txAmount" placeholder="Amount" type="number" step="0.01" required />
+            </div>
+            <div class="row">
+              <select id="txType" required>
+                <option value="expense">Expense</option>
+                <option value="income">Income</option>
+              </select>
+              <select id="txCategory"></select>
+              <input id="txDate" type="date" />
+            </div>
+            <div style="display:flex;gap:8px;margin-top:8px">
+              <button type="submit">Save</button>
+              <button type="button" id="cancelEdit" style="display:none">Cancel Edit</button>
+            </div>
+          </form>
+
+          <div class="summary" id="summary">
+            <div class="box"><div>Balance</div><div id="balance">€0.00</div></div>
+            <div class="box"><div>Total Income</div><div id="totalIncome">€0.00</div></div>
+            <div class="box"><div>Total Expense</div><div id="totalExpense">€0.00</div></div>
+          </div>
+
+          <div class="transactions" id="txList"></div>
+
+          <div class="charts">
+            <canvas id="pieChart"></canvas>
+            <canvas id="lineChart"></canvas>
+          </div>
+
+          <div class="export-buttons">
+            <button id="exportCSV">Export CSV</button>
+            <button id="exportJSON">Export JSON</button>
+            <input type="file" id="importJSON" accept="application/json" />
+          </div>
+        </div>
+      </div>
+      <div>
+        <div class="card">
+          <h2>Categories</h2>
+          <input id="newCat" placeholder="New category" />
+          <button id="addCat">Add</button>
+          <div id="catList"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+(() => {
+  const LS_KEY='budgeter_v5';
+  let transactions=JSON.parse(localStorage.getItem(LS_KEY)||'[]');
+  const defaultCats=['Food','Housing','Transport','Utilities','Entertainment','Salary','Other'];
+  let categories=JSON.parse(localStorage.getItem('budgeter_cats_v5')||JSON.stringify(defaultCats));
+
+  const txForm=document.getElementById('txForm');
+  const txDesc=document.getElementById('txDesc');
+  const txAmount=document.getElementById('txAmount');
+  const txType=document.getElementById('txType');
+  const txCategory=document.getElementById('txCategory');
+  const txDate=document.getElementById('txDate');
+  const editId=document.getElementById('editId');
+  const cancelEdit=document.getElementById('cancelEdit');
+  const txList=document.getElementById('txList');
+  const balanceEl=document.getElementById('balance');
+  const totalIncomeEl=document.getElementById('totalIncome');
+  const totalExpenseEl=document.getElementById('totalExpense');
+
+  const pieCanvas=document.getElementById('pieChart');
+  const lineCanvas=document.getElementById('lineChart');
+  let pieChart=null,lineChart=null;
+
+  function save(){localStorage.setItem(LS_KEY,JSON.stringify(transactions));}
+  function saveCats(){localStorage.setItem('budgeter_cats_v5',JSON.stringify(categories));}
+
+  function renderCats(){
+    txCategory.innerHTML='';
+    categories.forEach(c=>{
+      const o=document.createElement('option');o.value=c;o.textContent=c;txCategory.appendChild(o);
+    });
+    const cl=document.getElementById('catList');cl.innerHTML='';
+    categories.forEach(c=>{ const div=document.createElement('div');div.textContent=c;cl.appendChild(div);});
+  }
+
+  function formatChanges(edit){
+    return edit.changes.map(ch=>`${ch.field}: ${ch.old} → ${ch.new}`).join(', ');
+  }
+
+  function renderCharts(){
+    const expenseByCat={};
+    transactions.filter(t=>t.type==='expense').forEach(t=>{expenseByCat[t.category]=(expenseByCat[t.category]||0)+t.amount});
+    const pieData={labels:Object.keys(expenseByCat),datasets:[{data:Object.values(expenseByCat),backgroundColor:['#60a5fa','#34d399','#fbbf24','#f472b6','#a78bfa','#f97316','#22d3ee']}]};
+    if(pieChart) pieChart.destroy();
+    pieChart=new Chart(pieCanvas,{type:'pie',data:pieData});
+
+    const monthlyBalance={};
+    transactions.forEach(t=>{
+      const month=t.date.slice(0,7);
+      monthlyBalance[month]=(monthlyBalance[month]||0)+(t.type==='income'?t.amount:-t.amount);
+    });
+    const months=Object.keys(monthlyBalance).sort();
+    let running=0;
+    const balances=months.map(m=>{running+=monthlyBalance[m];return running});
+    const lineData={labels:months,datasets:[{label:'Balance',data:balances,borderColor:'#60a5fa',fill:false}]};
+    if(lineChart) lineChart.destroy();
+    lineChart=new Chart(lineCanvas,{type:'line',data:lineData,options:{responsive:true}});
+  }
+
+  function render(){
+    const income=transactions.filter(t=>t.type==='income').reduce((a,b)=>a+Number(b.amount),0);
+    const expense=transactions.filter(t=>t.type==='expense').reduce((a,b)=>a+Number(b.amount),0);
+    balanceEl.textContent=(income-expense).toFixed(2);
+    totalIncomeEl.textContent=income.toFixed(2);
+    totalExpenseEl.textContent=expense.toFixed(2);
+
+    txList.innerHTML='';
+    transactions.forEach(t=>{
+      const div=document.createElement('div');div.className='tx';
+      let note='';
+      if(t.edits && t.edits.length>0){
+        const lastEdit=t.edits[t.edits.length-1];
+        note=`(edited ${lastEdit.timestamp} — ${formatChanges(lastEdit)})`;
+      }
+      div.innerHTML=`<div>${t.description} (${t.category}) <span class='edited-note' title='${t.edits?JSON.stringify(t.edits,null,2):''}'>${note}</span></div><div>${t.type==='income'?'+':'-'}${t.amount}</div><div><button data-id='${t.id}' class='editBtn'>Edit</button><button data-id='${t.id}' class='delBtn'>Delete</button></div>`;
+      txList.appendChild(div);
+    });
+
+    renderCharts();
+  }
+
+  function exportCSV(){
+    const header=['ID','Description','Amount','Type','Category','Date','Edits'];
+    const rows=transactions.map(t=>[t.id,t.description,t.amount,t.type,t.category,t.date,t.edits?JSON.stringify(t.edits):'']);
+    const csv=[header.join(','),...rows.map(r=>r.map(v=>`"${v}"`).join(','))].join('\n');
+    const blob=new Blob([csv],{type:'text/csv'});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');a.href=url;a.download='transactions.csv';a.click();URL.revokeObjectURL(url);
+  }
+
+  function exportJSON(){
+    const blob=new Blob([JSON.stringify(transactions,null,2)],{type:'application/json'});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');a.href=url;a.download='transactions.json';a.click();URL.revokeObjectURL(url);
+  }
+
+  function importJSON(file){
+    const reader=new FileReader();
+    reader.onload=e=>{
+      try{transactions=JSON.parse(e.target.result)||[];save();render();}catch(err){alert('Invalid JSON');}
+    };
+    reader.readAsText(file);
+  }
+
+  txForm.addEventListener('submit',e=>{
+    e.preventDefault();
+    const data={id:editId.value||Date.now().toString(),description:txDesc.value,amount:Number(txAmount.value),type:txType.value,category:txCategory.value,date:txDate.value||new Date().toISOString().slice(0,10),edits:[]};
+    if(editId.value){
+      const old=transactions.find(t=>t.id===editId.value);
+      const changes=[];
+      ['description','amount','type','category','date'].forEach(f=>{if(old[f]!=data[f])changes.push({field:f,old:old[f],new:data[f]})});
+      if(changes.length>0){
+        data.edits=old.edits||[];
+        data.edits.push({timestamp:new Date().toLocaleString(),changes});
+      }
+      transactions=transactions.map(t=>t.id===editId.value?data:t);
+      editId.value='';cancelEdit.style.display='none';
+    }else{transactions.push(data);}
+    save();render();txForm.reset();
+  });
+
+  cancelEdit.addEventListener('click',()=>{editId.value='';txForm.reset();cancelEdit.style.display='none';});
+
+  txList.addEventListener('click',e=>{
+    if(e.target.classList.contains('delBtn')){
+      transactions=transactions.filter(t=>t.id!==e.target.dataset.id);save();render();
+    }
+    if(e.target.classList.contains('editBtn')){
+      const t=transactions.find(x=>x.id===e.target.dataset.id);
+      if(!t)return;
+      txDesc.value=t.description;txAmount.value=t.amount;txType.value=t.type;txCategory.value=t.category;txDate.value=t.date;editId.value=t.id;cancelEdit.style.display='inline-block';
+    }
+  });
+
+  document.getElementById('addCat').addEventListener('click',()=>{
+    const v=document.getElementById('newCat').value.trim();
+    if(!v)return;categories.push(v);saveCats();renderCats();document.getElementById('newCat').value='';
+  });
+
+  document.getElementById('exportCSV').addEventListener('click',exportCSV);
+  document.getElementById('exportJSON').addEventListener('click',exportJSON);
+  document.getElementById('importJSON').addEventListener('change',e=>importJSON(e.target.files[0]));
+
+  renderCats();render();
+})();
+</script>
+</body>
+</html>
